@@ -4,10 +4,12 @@ detected_images/
 env/
 runs/
 server/
+down/
+up/
 
 # file
 nv-tensorrt-local-repo-ubuntu2204-8.6.1-cuda-11.8_1.0-1_amd64.deb
 yolov8l.pt
 yolov8m.pt
-git yolov8n.pt
-yolov8n.ptgit commiy
+yolov8n.ptgit 
+requirements.txt
