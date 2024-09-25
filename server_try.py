@@ -1,130 +1,135 @@
-import socketio
 import eventlet
+eventlet.monkey_patch()
+import socketio
 import cv2
 import base64
 import time
-import threading
-import signal
-import sys
 import os
+import torch
 from ultralytics import YOLO
-import numpy as np
+import requests
 
-# Load model YOLOv8
-model = YOLO('yolov8m.pt')
+# Fungsi untuk memulai GoPro
+def start_gopro():
+    url = 'http://172.25.165.51:8080/gopro/webcam/start?res=4&fov=4&port=8556&protocol=RTSP'
+    response = requests.get(url)
+    if response.status_code == 200:
+        print("GoPro started in webcam mode")
+    else:
+        print(f"Failed to start GoPro: {response.text}")
 
-# Initialize Socket.IO server
-sio = socketio.Server(cors_allowed_origins='*')
-app = socketio.WSGIApp(sio)
-
-# Variables to track state
-last_emit_time = time.time()
-camera_running = True  # Flag to stop camera detection
-
-# Directory to save detected images
-save_dir = 'detected_images'
-os.makedirs(save_dir, exist_ok=True)  # Create directory if it doesn't exist
-
-# Path to the current best detected image
-best_image_path = os.path.join(save_dir, 'best_detected.jpg')
-best_score = 0  # Initialize the best detection score
-
-# Function to encode image to base64 from a file
+# Fungsi untuk encode gambar ke base64
 def encode_image_to_base64(image_path):
     with open(image_path, 'rb') as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
+        image_data = image_file.read()
+    return base64.b64encode(image_data).decode('utf-8')
 
-# Event when client connects
-@sio.event
-def connect(sid, environ):
-    print(f'Client connected: {sid}')
+# Fungsi untuk menyimpan gambar dengan akurasi tertinggi
+def save_best_image(image, confidence, folder_path, filename):
+    file_path = os.path.join(folder_path, filename)
+    cv2.imwrite(file_path, image)
+    print(f"Image saved at {file_path} with confidence {confidence:.2f}")
 
-# Event when client disconnects
-@sio.event
-def disconnect(sid):
-    print(f'Client disconnected: {sid}')
+# Fungsi untuk mendeteksi manusia dari frame kamera
+def detect_from_camera(device):
+    # Load model YOLOv8 dan konfigurasi deteksi hanya manusia (class 0 adalah manusia)
+    model = YOLO('yolov8m.pt')
+    
+    # Pastikan folder untuk menyimpan gambar ada
+    up_folder = './up'
+    down_folder = './down'
+    os.makedirs(up_folder, exist_ok=True)
+    os.makedirs(down_folder, exist_ok=True)
 
-# Function for object detection from camera frames
-def detect_from_camera():
-    global last_emit_time, camera_running, best_score
+    # Inisialisasi akurasi tertinggi
+    highest_confidence_up = 0
+    highest_confidence_down = 0
 
-    # Open the camera
-    cap = cv2.VideoCapture(0)
-
-    if not cap.isOpened():
-        print("Failed to open camera")
+    # Tentukan sumber video
+    if device == 'cam1':
+        source = 0  # Kamera internal
+    elif device == 'gopro':
+        source = "rtsp://172.25.165.51:554/live"  # GoPro
+    else:
+        print("No valid camera detected")
         return
 
-    while camera_running:
+    cap = cv2.VideoCapture(source)
+    prev_time = 0  # Variabel untuk menghitung FPS
+
+    while True:
         ret, frame = cap.read()
         if not ret:
-            print("Failed to read frame from camera")
             break
 
+        # Hitung FPS
         current_time = time.time()
-        
-        # Perform detection every 2 seconds
-        output = model(frame)
-        detected = False
-        current_best_score = 0  # Track the current best score for this frame
+        fps = 1 / (current_time - prev_time) if prev_time != 0 else 0
+        prev_time = current_time
 
-        for result in output:
-            if result.boxes is not None:
-                for box in result.boxes.data.tolist():
-                    class_id = int(box[5])  # Assuming class_id is at index 5
-                    score = box[4]  # Assuming confidence score is at index 4
-                    if class_id == 0:  # Check for 'person'
-                        detected = True
-                        current_best_score = max(current_best_score, score)  # Update current best score
+        # Deteksi objek manusia (class 0) menggunakan YOLOv8
+        results = model(frame)
 
-        if detected and current_best_score > best_score:
-            best_score = current_best_score  # Update the best score
-            result_image = output[0].plot()  # Image with bounding box
-            
-            # Save the detected image with the highest score
-            cv2.imwrite(best_image_path, result_image)  # Save as JPG
+        # Filter hasil deteksi untuk hanya manusia (class 0)
+        human_detections = [det for det in results[0].boxes if det.cls[0] == 0]
 
-        # Send the image every second
-        if current_time - last_emit_time >= 1:
-            if os.path.exists(best_image_path):
-                # Encode the saved image to base64
-                image_64 = encode_image_to_base64(best_image_path)
+        if human_detections:
+            # Ambil deteksi dengan confidence tertinggi
+            best_detection = max(human_detections, key=lambda det: det.conf[0])
+            confidence = best_detection.conf[0]
 
-                # Emit image to client with acknowledgment
-                sio.emit('image', {'image': image_64}, callback=lambda data: print('Client acknowledged:', data))
+            # Simpan gambar jika confidence tertinggi baru
+            if device == "cam1" and confidence > highest_confidence_up:
+                highest_confidence_up = confidence
+                save_best_image(frame, confidence, up_folder, 'best_up.jpg')
 
-                print(f"Image sent with size: {len(image_64)} bytes")
+            elif device == 'gopro' and confidence > highest_confidence_down:
+                highest_confidence_down = confidence
+                save_best_image(frame, confidence, down_folder, 'best_down.jpg')
 
-            last_emit_time = current_time  # Update time after sending
-
-        # Allow OpenCV to update the window
-        cv2.imshow("YOLOv8 Detection", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break  # Exit if 'q' is pressed
+        # Delay untuk mengontrol frekuensi deteksi
+        time.sleep(0.06)
 
     cap.release()
     cv2.destroyAllWindows()
 
-# Function to run the server
-def run_server():
-    print("Starting Socket.IO server...")
-    eventlet.wsgi.server(eventlet.listen(('', 5000)), app)
-    print("Socket.IO server running at http://localhost:5000")
+# Fungsi untuk mengirim gambar yang tersimpan ke client setiap 1 detik
+def emit_saved_images():
+    while True:
+        # Emit gambar up
+        up_image_path = './up/best_up.jpg'
+        if os.path.exists(up_image_path):
+            image_64 = encode_image_to_base64(up_image_path)
+            sio.emit('up', {'data': image_64})
 
-# Signal handler to gracefully stop the program
-def signal_handler(sig, frame):
-    global camera_running
-    print("Stopping program...")
-    camera_running = False  # Set flag to stop camera detection
-    sys.exit(0)  # Exit the program
+        # Emit gambar down
+        down_image_path = './down/best_down.jpg'
+        if os.path.exists(down_image_path):
+            image_64 = encode_image_to_base64(down_image_path)
+            sio.emit('down', {'data': image_64})
 
-# Run the server and camera detection
+        # Tunggu 1 detik sebelum emit berikutnya
+        time.sleep(1)
+
+# Inisialisasi Socket.IO server
+sio = socketio.Server(cors_allowed_origins='*')
+app = socketio.WSGIApp(sio)
+
+# Event ketika client connect
+@sio.event
+def connect(sid, environ):
+    print(f'Client connected: {sid}')
+
+# Jalankan server
 if __name__ == '__main__':
-    signal.signal(signal.SIGINT, signal_handler)
+    start_gopro()  # Start GoPro
 
-    # Start camera detection in a separate thread
-    camera_thread = threading.Thread(target=detect_from_camera)
-    camera_thread.start()
-    
-    # Run Socket.IO server in the main thread
-    run_server()
+    # Menjalankan deteksi untuk GoPro dan kamera internal
+    sio.start_background_task(detect_from_camera, device='gopro')
+    sio.start_background_task(detect_from_camera, device='cam1')
+
+    # Memulai task untuk mengirim gambar yang tersimpan setiap 1 detik
+    sio.start_background_task(emit_saved_images)
+
+    # Jalankan server Socket.IO
+    eventlet.wsgi.server(eventlet.listen(('', 5000)), app)
