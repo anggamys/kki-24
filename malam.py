@@ -5,13 +5,13 @@ import cv2
 import base64
 import time
 import os
-import torch
 from ultralytics import YOLO
-import requests
+from datetime import datetime
 import json
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import threading
+from typing import Optional
 
 # Kunci global untuk menghindari race condition saat mengakses file
 file_lock = threading.Lock()
@@ -30,10 +30,36 @@ def encode_image_to_base64(image):
     return base64.b64encode(buffer).decode('utf-8')
 
 # Fungsi untuk menyimpan gambar dengan akurasi tertinggi
-def save_best_image(image, confidence, folder_path, filename):
-    file_path = os.path.join(folder_path, filename)
-    cv2.imwrite(file_path, image)
-    print(f"Image saved at {file_path} with confidence {confidence:.2f}")
+def save_best_image(frame, confidence, folder, filename_prefix):
+    # Buat folder jika belum ada
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+
+    # Format nama file menggunakan timestamp dan confidence
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    filename = f"{filename_prefix}_{timestamp}_conf-{confidence:.2f}.jpg"
+    filepath = os.path.join(folder, filename)
+
+    # Simpan gambar
+    cv2.imwrite(filepath, frame)
+    print(f"Image saved at: {filepath}")
+
+# Fungsi untuk mencari file terbaru berdasarkan waktu modifikasi
+def get_latest_file(folder: str) -> Optional[str]:
+    try:
+        files = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith('.jpg')]
+        latest_file = max(files, key=os.path.getmtime)
+        return latest_file
+    except ValueError:
+        # Jika tidak ada file di folder, return None
+        return None
+
+def get_latest_frame(device_folder: str) -> Optional[str]:
+    try:
+        files = [os.path.join(device_folder, f) for f in os.listdir(device_folder) if f.endswith('.jpg')]
+        return max(files, key=os.path.getmtime)
+    except ValueError:
+        return None  # Jika folder kosong
 
 # Fungsi untuk memuat data dari file JSON
 def load_data():
@@ -211,6 +237,7 @@ def detect_from_camera(device, model):
         results = model(frame)
         human_detections = [det for det in results[0].boxes if det.cls[0] == 0]
 
+        # Gambarkan bounding box di frame
         for det in human_detections:
             x1, y1, x2, y2 = map(int, det.xyxy[0])
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -219,20 +246,27 @@ def detect_from_camera(device, model):
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
+        # Simpan gambar jika ada deteksi manusia
         if human_detections:
             best_detection = max(human_detections, key=lambda det: det.conf[0])
             confidence = best_detection.conf[0]
 
             if device == "up" and confidence > highest_confidence_up:
                 highest_confidence_up = confidence
-                save_best_image(frame, confidence, up_folder, 'best_up.jpg')
+                save_best_image(frame, confidence, up_folder, 'up_image')
 
-            elif device == 'down' and confidence > highest_confidence_down:
-                highest_confidence_down = confidence
-                save_best_image(frame, confidence, down_folder, 'best_down.jpg')
+                # Simpan gambar dari kamera bawah jika akurasi kamera atas paling tinggi
+                down_image_path = get_latest_frame("down")  # Ambil gambar terbaru dari kamera bawah
+                if down_image_path:
+                    frame_down = cv2.imread(down_image_path)
+                    save_best_image(frame_down, confidence, down_folder, f'down_image_{time.strftime("%Y%m%d_%H%M%S")}.jpg')
 
+            # elif device == 'down' and confidence > highest_confidence_down:
+            #     highest_confidence_down = confidence
+            #     save_best_image(frame, confidence, down_folder, 'down_image')
+
+        # Encode gambar menjadi base64 dan kirim melalui socket
         burst_image = encode_image_to_base64(frame)
-
         result = {
             'ResultDetection': {
                 device: {
@@ -241,21 +275,24 @@ def detect_from_camera(device, model):
             }
         }
         sio.emit('ResultDetection', result)
+
+        # Tunggu 60ms sebelum mengambil frame berikutnya
         time.sleep(0.06)
+
 
     cap.release()
     cv2.destroyAllWindows()
 
-# Fungsi untuk mengirim gambar yang tersimpan ke client setiap 1 detik
+# Fungsi untuk mengirim gambar terbaru ke client setiap 1 detik
 def emit_saved_images():
     while True:
-        up_image_path = './up/best_up.jpg'
-        if os.path.exists(up_image_path):
+        up_image_path = get_latest_file('./up')
+        if up_image_path:
             image_64 = encode_image_to_base64(cv2.imread(up_image_path))
             sio.emit('up', {'data': image_64})
 
-        down_image_path = './down/best_down.jpg'
-        if os.path.exists(down_image_path):
+        down_image_path = get_latest_file('./down')
+        if down_image_path:
             image_64 = encode_image_to_base64(cv2.imread(down_image_path))
             sio.emit('down', {'data': image_64})
 
@@ -269,7 +306,7 @@ def connect(sid, environ):
 if __name__ == '__main__':
     model = YOLO('yolov8m.pt')
     app.debug = True,
-    # sio.start_background_task(detect_from_camera, device='up', model=model)
-    # sio.start_background_task(detect_from_camera, device='down', model=model)
-    # sio.start_background_task(emit_saved_images)
+    sio.start_background_task(detect_from_camera, device='up', model=model)
+    sio.start_background_task(detect_from_camera, device='down', model=model)
+    sio.start_background_task(emit_saved_images)
     eventlet.wsgi.server(eventlet.listen(('', 5000)), flask_app)
