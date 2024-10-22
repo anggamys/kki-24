@@ -117,11 +117,11 @@ def detect_from_camera(device):
 # Jalankan server
 if __name__ == '__main__':
     # Start gopro
-    start_gopro()
+    # start_gopro()
 
     # Running detection
-    sio.start_background_task(detect_from_camera(device='gopro'))
-    # sio.start_background_task(detect_from_camera(device='cam1'))
+    # sio.start_background_task(detect_from_camera(device='gopro'))
+    sio.start_background_task(detect_from_camera(device='cam1'))
     
     # Jalankan server Socket.IO
     eventlet.wsgi.server(eventlet.listen(('', 5000)), app)
