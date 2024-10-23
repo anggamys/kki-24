@@ -206,81 +206,74 @@ def get_balls_by_arena(type_arena):
     # Mengembalikan array bola dalam response
     return jsonify(filtered_balls), 200
 
-# Fungsi untuk mendeteksi manusia dari frame kamera
-def detect_from_camera(device, model):
+def detect_from_camera(model):
     up_folder = './up'
     down_folder = './down'
     os.makedirs(up_folder, exist_ok=True)
     os.makedirs(down_folder, exist_ok=True)
 
     highest_confidence_up = 0
-    highest_confidence_down = 0
+    cap1 = cv2.VideoCapture(0)
+    cap2 = cv2.VideoCapture(1)
 
-    source = 0 if device == 'up' else 1
-    cap = cv2.VideoCapture(source)
-    if not cap.isOpened():
-        print(f"Failed to open camera: {device}")
+    if not cap1.isOpened() or not cap2.isOpened():
+        print("Failed to open one or both cameras.")
         return
 
     prev_time = cv2.getTickCount()
+    last_emit_time = 0
 
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            print(f"Failed to capture frame from {device}")
+        ret1, frame1 = cap1.read()
+        ret2, frame2 = cap2.read()
+
+        if not ret1 or not ret2:
+            print("Failed to capture frame from one or both cameras.")
             break
 
         current_time = cv2.getTickCount()
         fps = cv2.getTickFrequency() / (current_time - prev_time)
         prev_time = current_time
 
-        results = model(frame)
+        results = model(frame1)
         human_detections = [det for det in results[0].boxes if det.cls[0] == 0]
 
-        # Gambarkan bounding box di frame
         for det in human_detections:
             x1, y1, x2, y2 = map(int, det.xyxy[0])
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.rectangle(frame1, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-        cv2.imshow(f'{device} frame', frame)
+        cv2.imshow('Camera up frame', frame1)
+        cv2.imshow('Camera down frame', frame2)
+
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-        # Simpan gambar jika ada deteksi manusia
         if human_detections:
             best_detection = max(human_detections, key=lambda det: det.conf[0])
             confidence = best_detection.conf[0]
 
-            if device == "up" and confidence > highest_confidence_up:
+            if confidence > highest_confidence_up:
                 highest_confidence_up = confidence
-                save_best_image(frame, confidence, up_folder, 'up_image')
+                save_best_image(frame1, confidence, up_folder, 'up_image')
+                save_best_image(frame2, confidence, down_folder, 'down_image')
 
-                # Simpan gambar dari kamera bawah jika akurasi kamera atas paling tinggi
-                down_image_path = get_latest_frame("down")  # Ambil gambar terbaru dari kamera bawah
-                if down_image_path:
-                    frame_down = cv2.imread(down_image_path)
-                    save_best_image(frame_down, confidence, down_folder, f'down_image_{time.strftime("%Y%m%d_%H%M%S")}.jpg')
+        burst_image_up = encode_image_to_base64(frame1)
+        burst_image_down = encode_image_to_base64(frame2)
 
-            # elif device == 'down' and confidence > highest_confidence_down:
-            #     highest_confidence_down = confidence
-            #     save_best_image(frame, confidence, down_folder, 'down_image')
-
-        # Encode gambar menjadi base64 dan kirim melalui socket
-        burst_image = encode_image_to_base64(frame)
-        result = {
-            'ResultDetection': {
-                device: {
-                    'Image': burst_image
+        if time.time() - last_emit_time >= 1:
+            result = {
+                'ResultDetection': {
+                    'device_up': {'Image': burst_image_up},
+                    'device_down': {'Image': burst_image_down}
                 }
             }
-        }
-        sio.emit('ResultDetection', result)
+            sio.emit('ResultDetection', result)
+            last_emit_time = time.time()
 
-        # Tunggu 60ms sebelum mengambil frame berikutnya
         time.sleep(0.06)
 
-
-    cap.release()
+    cap1.release()
+    cap2.release()
     cv2.destroyAllWindows()
 
 # Fungsi untuk mengirim gambar terbaru ke client setiap 1 detik
@@ -306,7 +299,7 @@ def connect(sid, environ):
 if __name__ == '__main__':
     model = YOLO('yolov8m.pt')
     app.debug = True,
-    sio.start_background_task(detect_from_camera, device='up', model=model)
-    sio.start_background_task(detect_from_camera, device='down', model=model)
+    sio.start_background_task(detect_from_camera, model=model)
+    # sio.start_background_task(detect_from_camera, device='down', model=model)
     sio.start_background_task(emit_saved_images)
     eventlet.wsgi.server(eventlet.listen(('', 5000)), flask_app)
