@@ -186,15 +186,16 @@ def detect_from_camera(model):
 
             if frame1 is not None:
                 results = model(frame1)
-                human_detections = [det for det in results[0].boxes if det.cls[0] == 0]
-                for det in human_detections:
+                box_detection = [det for det in results[0].boxes if det.cls[0] == 0]
+                for det in box_detection:
                     x1, y1, x2, y2 = map(int, det.xyxy[0])
                     cv2.rectangle(frame1, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-                if human_detections:
-                    best_detection = max(human_detections, key=lambda det: (det.conf[0], (det.xyxy[0][2] - det.xyxy[0][0]) * (det.xyxy[0][3] - det.xyxy[0][1])))
+                if box_detection:
+                    best_detection = max(box_detection, key=lambda det: (det.conf[0], (det.xyxy[0][2] - det.xyxy[0][0]) * (det.xyxy[0][3] - det.xyxy[0][1])))
                     confidence = best_detection.conf[0]
                     save_best_image(frame1, confidence, up_folder, 'up_image')
+                    save_best_image(frame2, confidence, down_folder, 'down_image')
 
             burst_image_up = encode_image_to_base64(frame1) if frame1 is not None else None
             burst_image_down = encode_image_to_base64(frame2) if frame2 is not None else None
@@ -241,8 +242,8 @@ if __name__ == '__main__':
     app.debug = True
     
     # Memulai task latar belakang untuk deteksi kamera dan pengiriman gambar
-    # sio.start_background_task(detect_from_camera, model=model)
-    # sio.start_background_task(emit_saved_images)
+    sio.start_background_task(detect_from_camera, model=model)
+    sio.start_background_task(emit_saved_images)
 
     # Menggunakan Eventlet sebagai server untuk menggabungkan Flask dan Socket.IO
     eventlet.wsgi.server(eventlet.listen(('', 5000)), flask_app)
