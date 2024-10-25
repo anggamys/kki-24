@@ -54,13 +54,6 @@ def get_latest_file(folder: str) -> Optional[str]:
         # Jika tidak ada file di folder, return None
         return None
 
-def get_latest_frame(device_folder: str) -> Optional[str]:
-    try:
-        files = [os.path.join(device_folder, f) for f in os.listdir(device_folder) if f.endswith('.jpg')]
-        return max(files, key=os.path.getmtime)
-    except ValueError:
-        return None  # Jika folder kosong
-
 # Fungsi untuk memuat data dari file JSON
 def load_data():
     # Menggunakan kunci saat membuka file
@@ -212,8 +205,15 @@ def detect_from_camera(model):
     os.makedirs(up_folder, exist_ok=True)
     os.makedirs(down_folder, exist_ok=True)
 
+    # Variabel untuk melacak confidence tertinggi dan area terbesar
     highest_confidence_up = 0
-    cap1 = cv2.VideoCapture(0)
+    largest_area_up = 0
+
+    # Dataset video
+    arena_a = 'D:\Kuliah\komunitas\Robotic\Nautronica\ASV-2023\VID_20241023_131021.mp4'
+    
+    # Capture video
+    cap1 = cv2.VideoCapture(arena_a)
     cap2 = cv2.VideoCapture(1)
 
     if not cap1.isOpened() or not cap2.isOpened():
@@ -248,14 +248,23 @@ def detect_from_camera(model):
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
+        # Deteksi manusia berdasarkan confidence tertinggi dan ukuran bounding box terbesar
         if human_detections:
-            best_detection = max(human_detections, key=lambda det: det.conf[0])
-            confidence = best_detection.conf[0]
+            for det in human_detections:
+                # Ambil nilai confidence dan ukuran bounding box
+                confidence = det.conf[0]
+                x1, y1, x2, y2 = map(int, det.xyxy[0])
+                area = (x2 - x1) * (y2 - y1)
 
-            if confidence > highest_confidence_up:
-                highest_confidence_up = confidence
-                save_best_image(frame1, confidence, up_folder, 'up_image')
-                save_best_image(frame2, confidence, down_folder, 'down_image')
+                # Cek apakah confidence dan ukuran lebih besar dari nilai sebelumnya
+                if confidence > highest_confidence_up and area > largest_area_up:
+                    # Perbarui nilai confidence dan area terbesar
+                    highest_confidence_up = confidence
+                    largest_area_up = area
+                    
+                    # Simpan gambar dari frame 1 dan frame 2
+                    save_best_image(frame1, confidence, up_folder, 'up_image')
+                    save_best_image(frame2, confidence, down_folder, 'down_image')
 
         burst_image_up = encode_image_to_base64(frame1)
         burst_image_down = encode_image_to_base64(frame2)
@@ -297,9 +306,9 @@ def connect(sid, environ):
     print(f'Client connected: {sid}')
 
 if __name__ == '__main__':
-    model = YOLO('yolov8m.pt')
+    model = YOLO('best.pt')
     app.debug = True,
     sio.start_background_task(detect_from_camera, model=model)
     # sio.start_background_task(detect_from_camera, device='down', model=model)
-    sio.start_background_task(emit_saved_images)
+    # sio.start_background_task(emit_saved_images)
     eventlet.wsgi.server(eventlet.listen(('', 5000)), flask_app)
