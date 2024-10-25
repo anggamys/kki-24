@@ -1,6 +1,8 @@
 # Ignore folder
 myenv/
 python-modules/
+down/
+up/
 
 # Ignore file
 best.pt
