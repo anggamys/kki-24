@@ -1,3 +1,3 @@
-# ASV-2023
+# Realtime detection of Multiple Objects in Video Streams
 
-https://www.mediafire.com/file/im2p7osplxkrgq4/VID_20241023_131021.mp4/file
+This project implements a real-time object detection system using YOLOv8 and OpenCV. It is designed to detect multiple objects in video streams, such as those from a webcam or video files.
